@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-# 直接加载 file_registry 模块，绕过 app.knowledge.__init__ 对 indexer 的依赖
+# 直接加载 file_registry 模块，绕过 app.knowledge.__init__ 对 indexer 重依赖的导入
 _module_path = Path(__file__).parent.parent / "app" / "knowledge" / "file_registry.py"
 _spec = importlib.util.spec_from_file_location("file_registry", _module_path)
 _module = importlib.util.module_from_spec(_spec)

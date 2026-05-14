@@ -12,12 +12,12 @@ logger = structlog.get_logger()
 
 knowledge_router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 
-# Track rebuild state
+# 跟踪重建状态
 _rebuild_in_progress = False
 
 
 async def _do_rebuild():
-    """Background task to rebuild the knowledge index."""
+    """后台任务：执行知识库索引重建。"""
     global _rebuild_in_progress
     try:
         _rebuild_in_progress = True

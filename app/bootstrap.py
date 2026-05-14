@@ -39,9 +39,9 @@ def create_app() -> FastAPI:
 
     # 3. 创建 FastAPI 实例
     app = FastAPI(
-        title="Customer Service Agent",
+        title="智能客服系统",
         version="1.0.0",
-        description="Intelligent customer service system powered by LangChain + LlamaIndex",
+        description="基于 LangChain + LlamaIndex + Milvus 的智能客服系统",
     )
 
     # 4. 注册全局异常处理器（捕获未处理异常，统一返回格式）

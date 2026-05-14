@@ -1,3 +1,8 @@
+"""
+全局异常处理模块
+
+注册 FastAPI 的全局异常处理器，统一错误响应格式。
+"""
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
@@ -8,7 +13,7 @@ logger = structlog.get_logger()
 
 
 def register_handlers(app: FastAPI) -> None:
-    """Register global exception handlers."""
+    """注册全局异常处理器。"""
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
