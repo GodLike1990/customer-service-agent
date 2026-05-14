@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Runtime data
+logs/*
+!logs/.gitkeep
+!logs/grafana/.gitkeep
+!logs/prometheus/.gitkeep
+*.log
+
+# Models (download via `hf download`, see README)
+models/*
+!models/.gitkeep
+
+# Knowledge docs (user-specific data, keep directory structure only)
+knowledge_docs/*
+!knowledge_docs/.gitkeep
+!knowledge_docs/example.md
+
+# Docker volumes
+prometheus_data/
+grafana_data/
+milvus_data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AI Agent directories
+.comate/
+.cursor/
+.augment/
+.aider/
+.continue/
+.copilot/
+
+# Environment config (contains secrets)
+conf/settings.yaml
+.env
+
+# OS
+.DS_Store
+Thumbs.db

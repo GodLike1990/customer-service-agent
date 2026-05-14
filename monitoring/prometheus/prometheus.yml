@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "customer-service-app"
+    static_configs:
+      - targets: ["app:9100"]
+        labels:
+          service: "customer-service-agent"

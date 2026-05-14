@@ -1,0 +1,206 @@
+# ==============================================================================
+# 智能客服系统 - Docker Compose 编排
+# ==============================================================================
+# 包含 6 个服务：
+#   - app: FastAPI 应用（业务服务）
+#   - etcd: Milvus 元数据存储（内部依赖）
+#   - minio: Milvus 对象存储（内部依赖）
+#   - milvus: 向量数据库
+#   - prometheus: 监控指标采集
+#   - grafana: 监控可视化面板
+#
+# 安全设计：
+#   - 仅 app:8000 和 grafana:3000 对外暴露（ports）
+#   - 其余服务仅在内部网络通信（expose）
+#   - 所有服务在同一 bridge 网络 cs_network 中
+#
+# 启动命令：docker compose up -d --build
+# 停止命令：docker compose down
+# 清除数据：docker compose down -v
+# ==============================================================================
+
+services:
+  # ============ 业务应用 ============
+  # FastAPI 服务，提供问答 API 和知识库管理接口
+  app:
+    build: .
+    container_name: cs-app
+    ports:
+      - "8000:8000"           # 业务 API 端口（对外）
+    expose:
+      - "9100"                # Prometheus metrics 端口（仅内部，Prometheus 抓取用）
+    environment:
+      - HF_HOME=/app/.cache/huggingface       # HuggingFace 缓存路径
+      - TRANSFORMERS_OFFLINE=1                 # 离线模式，不尝试联网下载模型
+    volumes:
+      - ./knowledge_docs:/app/knowledge_docs   # 知识库文档目录
+      - ./logs:/app/logs                       # 应用日志输出
+      - ./conf:/app/conf                       # 配置文件
+      - ./models:/app/models:ro                # 预下载的模型文件（只读挂载）
+      - hf_cache:/app/.cache/huggingface       # HF 缓存持久化
+    depends_on:
+      milvus:
+        condition: service_healthy             # 等待 Milvus 就绪后再启动
+    networks:
+      - cs_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============ Milvus 依赖组件 ============
+  # etcd: Milvus 的元数据存储和分布式协调服务
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: cs-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    expose:
+      - "2379"                # etcd 客户端端口（仅内部）
+      - "2380"                # etcd peer 端口（仅内部）
+    networks:
+      - cs_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # minio: Milvus 的对象存储后端（存储向量索引文件）
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: cs-minio
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    expose:
+      - "9000"                # S3 API 端口（仅内部）
+      - "9001"                # MinIO Console（仅内部）
+    networks:
+      - cs_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ============ Milvus 向量数据库 ============
+  # Standalone 模式：单节点部署，适合中小规模数据
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    container_name: cs-milvus
+    environment:
+      ETCD_ENDPOINTS: etcd:2379               # 通过 Docker DNS 解析服务名
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus
+    command: ["milvus", "run", "standalone"]
+    expose:
+      - "19530"               # Milvus gRPC 端口（仅内部，app 通过此端口访问）
+      - "9091"                # Milvus 健康检查端口
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - cs_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ============ 监控服务 ============
+  # Prometheus: 定期抓取 app:9100 的 metrics 指标
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: cs-prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"   # 数据保留 30 天
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+    expose:
+      - "9090"                # Prometheus Web UI（仅内部，Grafana 通过此端口查询）
+    networks:
+      - cs_network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"       # 单个日志文件最大 10MB
+        max-file: "3"         # 最多保留 3 个日志文件
+
+  # Grafana: 可视化监控面板，预置了客服系统 Dashboard
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: cs-grafana
+    ports:
+      - "3000:3000"           # Grafana Web UI（对外）
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_LOG_MODE=file                      # 日志输出到文件
+      - GF_LOG_LEVEL=info
+      - GF_PATHS_LOGS=/var/log/grafana
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro  # 自动配置数据源和面板
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro  # 预置 Dashboard JSON
+      - grafana_data:/var/lib/grafana
+      - ./logs/grafana:/var/log/grafana        # Grafana 日志输出到宿主机
+    depends_on:
+      - prometheus
+    networks:
+      - cs_network
+    restart: unless-stopped
+
+  # Attu: Milvus 可视化管理工具，用于查看 collection、数据、索引状态
+  attu:
+    image: zilliz/attu:v2.4
+    container_name: cs-attu
+    ports:
+      - "8989:3000"           # Attu Web UI（对外）
+    environment:
+      - MILVUS_URL=milvus:19530
+    depends_on:
+      - milvus
+    networks:
+      - cs_network
+    restart: unless-stopped
+
+# ============ 网络 ============
+# 所有服务在同一 bridge 网络中，通过服务名互相访问
+networks:
+  cs_network:
+    driver: bridge
+
+# ============ 持久化卷 ============
+# 使用 Docker named volumes 持久化数据，容器重启不丢失
+volumes:
+  etcd_data:                  # etcd 元数据
+  minio_data:                 # MinIO 对象存储数据
+  milvus_data:                # Milvus 向量数据
+  prometheus_data:            # Prometheus 时序数据
+  grafana_data:               # Grafana 配置和面板数据
+  hf_cache:                   # HuggingFace 模型缓存
